@@ -1,0 +1,107 @@
+name: Cloud Clipper — Stream to Viral Shorts
+
+on:
+  workflow_dispatch:
+    inputs:
+      stream_url:
+        description: 'Stream or VOD URL (YouTube, Twitch, Kick)'
+        required: true
+        default: ''
+      num_clips:
+        description: 'Number of top clips to generate (default: 8)'
+        required: false
+        default: '8'
+
+jobs:
+  build-shorts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      # 1. Checkout repo (so we have the skill files)
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Set up Python (for yt-dlp, ffmpeg wrappers)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. Install dependencies
+      - name: Install yt-dlp and ffmpeg
+        run: |
+          pip install yt-dlp numpy requests
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      # 4. Save YouTube cookies from secret (optional, for blocked videos)
+      - name: Save YouTube cookies
+        if: secrets.YOUTUBE_COOKIES != ''
+        run: |
+          echo "${{ secrets.YOUTUBE_COOKIES }}" > /tmp/cookies.txt
+          echo "YouTube cookies saved"
+
+      # 5. Download stream (+ live chat replay if available)
+      - name: Download stream
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          COOKIES: /tmp/cookies.txt
+        run: |
+          echo "📥 Downloading stream..."
+          COOKIES_FLAG=""
+          [ -f /tmp/cookies.txt ] && COOKIES_FLAG="--cookies /tmp/cookies.txt"
+          yt-dlp -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
+            --merge-output-format mp4 \
+            -o "source.%(ext)s" \
+            $COOKIES_FLAG \
+            "${{ inputs.stream_url }}"
+          ls -lh source.* 2>/dev/null || echo "⚠ Download produced no output"
+
+      # 6. Transcribe with Groq Whisper API (cloud, no FreeLLMAPI)
+      - name: Transcribe with Groq Whisper
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          echo "🎤 Transcribing with Groq Whisper API..."
+          python3 .claude/skills/cloud-clipper/scripts/transcribe.py source.mp4 \
+            --model small --language auto --groq-key "$GROQ_API_KEY"
+
+      # 7. Score best moments (audio + speech + chat signals)
+      - name: Score best moments
+        run: |
+          echo "🤖 Scoring moments..."
+          python3 .claude/skills/cloud-clipper/scripts/find_hype.py . --window 30 --top 25
+
+      # 8. AI writes publishing package (title, description, tags)
+      - name: Generate publishing kit
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          echo "📝 Writing publishing package..."
+          python3 .claude/skills/cloud-clipper/scripts/publish_kit.py . \
+            --num-clips "${{ inputs.num_clips }}" \
+            --groq-key "$GROQ_API_KEY"
+
+      # 9. Render shorts with ffmpeg (9:16, captions burned in)
+      - name: Render shorts
+        run: |
+          echo "🎬 Rendering shorts..."
+          python3 .claude/skills/cloud-clipper/scripts/make_shorts.py source.mp4 shorts \
+            --clips clips.json --layout crop
+
+      # 10. Upload finished shorts as artifacts
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finished-shorts
+          path: shorts/
+          retention-days: 30
+
+      # 11. Notify completion
+      - name: Notify completion
+        if: always()
+        run: |
+          echo "✓ Cloud clipper pipeline complete!"
+          echo "Check the artifact 'finished-shorts' for your vertical Shorts."
