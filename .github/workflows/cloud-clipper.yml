@@ -5,7 +5,7 @@ on:
     inputs:
       stream_url:
         description: 'Stream or VOD URL (YouTube, Twitch, Kick)'
-        required: true
+        required: false
         default: ''
       num_clips:
         description: 'Number of top clips to generate (default: 8)'
@@ -21,6 +21,17 @@ jobs:
       # 1. Checkout repo (so we have the skill files)
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 1.5. Guard: make sure stream_url was actually provided
+      - name: Validate inputs
+        run: |
+          if [ -z "${{ inputs.stream_url }}" ]; then
+            echo "❌ No stream_url provided!"
+            echo "Go to the Actions tab → click 'Run workflow' → paste a URL into the 'stream_url' field."
+            exit 1
+          fi
+          echo "✅ stream_url = ${{ inputs.stream_url }}"
+          echo "✅ num_clips = ${{ inputs.num_clips }}"
 
       # 2. Set up Python
       - name: Set up Python
