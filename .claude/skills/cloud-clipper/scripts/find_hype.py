@@ -88,6 +88,26 @@ def main():
     video = os.path.join(a.workdir, "source.mp4")
     tr = json.load(open(os.path.join(a.workdir, "transcript.json"), encoding="utf-8"))
     sec_path = os.path.join(a.workdir, "section.json")
+
+    # Guard: check transcript was actually generated
+    if not tr.get("words") and not tr.get("segments"):
+        print("⚠ Transcript is empty! Check the transcription step.")
+        print("  transcript.json contents:")
+        print(json.dumps(tr, indent=2)[:500])
+        exit(1)
+
+    # Build segments from words if needed
+    segs = tr.get("segments", [])
+    if not segs:
+        # Create synthetic segments from words for downstream processing
+        if tr.get("words"):
+            words = tr.get("words", [])
+            if words:
+                segs = [{"start": words[0]["s"], "end": words[-1]["e"], "text": " ".join(w["w"] for w in words), "words": words}]
+                print(f"⚠ Built synthetic segment from {len(words)} words")
+        else:
+            print("⚠ No words or segments in transcript!")
+            exit(1)
     offset = json.load(open(sec_path))['offset'] if os.path.exists(sec_path) else 0.0
 
     print("Measuring audio loudness…")
@@ -101,6 +121,11 @@ def main():
     pad = np.pad(db, (k // 2, k - k // 2 - 1), mode="edge")
     base = np.convolve(pad, np.ones(k) / k, mode="valid")[:n]
     audio = np.clip(db - base, 0, None)
+
+    # If audio is silent (no words), create dummy segments to avoid crash
+    if len(words) == 0:
+        print("⚠ No words found in audio, creating dummy segment for scoring")
+        tr["segments"] = [{"start": 0, "end": n, "text": "", "words": []}]
 
     msgs, chype = chat_per_sec(os.path.join(a.workdir, "chat.json"), n, offset)
     if msgs is None:
