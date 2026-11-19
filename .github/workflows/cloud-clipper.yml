@@ -1,6 +1,6 @@
 name: Cloud Clipper — Stream to Viral Shorts
 
-on:
+"on":
   workflow_dispatch:
     inputs:
       stream_url:

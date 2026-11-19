@@ -1,6 +1,6 @@
 name: Test Runner
 
-on:
+"on":
   workflow_dispatch:
 
 jobs:
