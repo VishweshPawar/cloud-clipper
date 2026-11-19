@@ -48,10 +48,15 @@ jobs:
 
       # 4. Save YouTube cookies from secret (optional)
       - name: Save YouTube cookies
-        if: secrets.YOUTUBE_COOKIES != ''
         run: |
-          echo "${{ secrets.YOUTUBE_COOKIES }}" > /tmp/cookies.txt
-          echo "YouTube cookies saved"
+          if [ -n "${YOUTUBE_COOKIES}" ]; then
+            echo "${YOUTUBE_COOKIES}" > /tmp/cookies.txt
+            echo "YouTube cookies saved ($(wc -c < /tmp/cookies.txt) bytes)"
+          else
+            echo "⚠ No YouTube cookies provided — skipping (may hit IP blocks on YT)"
+          fi
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
 
       # 5. Download stream
       - name: Download stream
