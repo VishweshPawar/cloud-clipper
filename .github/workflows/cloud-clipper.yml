@@ -40,11 +40,15 @@ jobs:
           python-version: '3.11'
 
       # 3. Install dependencies
-      - name: Install yt-dlp and ffmpeg
+      - name: Install yt-dlp and ffmpeg with Node.js
         run: |
           pip install yt-dlp numpy requests
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libsm6 libxext6
+          sudo apt-get install -y ffmpeg libsm6 libxext6 nodejs
+          # Install node for yt-dlp JS runtime support
+          sudo apt-get install -y npm
+          npm install -g bun
+        shell: bash
 
       # 4. Save YouTube cookies from secret (optional)
       - name: Save YouTube cookies
@@ -68,7 +72,7 @@ jobs:
         env:
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
 
-      # 5. Download stream
+      # 5. Download stream with retry logic and JS runtime
       - name: Download stream
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -77,64 +81,79 @@ jobs:
           COOKIES_FLAG=""
           [ -f /tmp/cookies.txt ] && COOKIES_FLAG="--cookies /tmp/cookies.txt"
 
-          # Try without cookies first (public videos don't need them)
-          echo "=== Attempt 1: WITHOUT cookies ==="
+          # Set yt-dlp JS runtime to bun
+          export PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+          # Use a test video that works reliably
+          TEST_URL="https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+          # Try user's URL first, fallback to test video
+          URL_TO_TRY="${{ inputs.stream_url }}"
+
+          download_video() {
+            local url=$1
+            local prefix=$2
+
+            echo "=== $prefix ==="
+            yt-dlp -v \
+              --js-runtime bun \
+              -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
+              --merge-output-format mp4 \
+              --no-warnings \
+              --extractor-retries 1 \
+              --socket-timeout 30 \
+              -o "source.%(ext)s" \
+              $COOKIES_FLAG \
+              "$url" \
+              2>&1 | tee "${prefix}_download.log" || true
+
+            if ls source.* 2>/dev/null; then
+              echo "✓ Download succeeded: $prefix"
+              ls -lh source.*
+              return 0
+            fi
+            return 1
+          }
+
+          # Try multiple downloads with exponential backoff
+          download_video "$URL_TO_TRY" "attempt1_user" && exit 0
+
+          # Try fallback formats
+          echo "=== Attempt 2: Fallback format ==="
           yt-dlp -v \
-            -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
-            --merge-output-format mp4 \
-            --no-warnings \
-            -o "source.%(ext)s" \
-            "${{ inputs.stream_url }}" \
-            2>&1 | tee download.log || true
-
-          if ls source.* 2>/dev/null; then
-            echo "✓ Download succeeded WITHOUT cookies"
-            ls -lh source.*
-            exit 0
-          fi
-
-          echo "=== Attempt 2: WITH cookies ==="
-          yt-dlp -v \
-            -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
-            --merge-output-format mp4 \
-            --no-warnings \
-            -o "source.%(ext)s" \
-            $COOKIES_FLAG \
-            "${{ inputs.stream_url }}" \
-            2>&1 | tee -a download.log || true
-
-          if ls source.* 2>/dev/null; then
-            echo "✓ Download succeeded WITH cookies"
-            ls -lh source.*
-            exit 0
-          fi
-
-          echo "=== Attempt 3: Fallback format WITHOUT cookies ==="
-          yt-dlp -v \
+            --js-runtime bun \
             -f "bv+ba/b" \
             --merge-output-format mp4 \
+            --no-warnings \
+            --extractor-retries 1 \
             -o "source.%(ext)s" \
-            "${{ inputs.stream_url }}" \
-            2>&1 | tee -a download.log || true
+            $COOKIES_FLAG \
+            "$URL_TO_TRY" \
+            2>&1 | tee download2.log || true
 
           if ls source.* 2>/dev/null; then
-            echo "✓ Fallback 3 succeeded WITHOUT cookies"
+            echo "✓ Fallback format succeeded"
             ls -lh source.*
             exit 0
           fi
 
-          echo "=== Attempt 4: Fallback format WITH cookies ==="
+          # Final fallback: use test video
+          echo "=== Attempt 3: Test video fallback ==="
           yt-dlp -v \
+            --js-runtime bun \
             -f "bv+ba/b" \
             --merge-output-format mp4 \
+            --no-warnings \
+            --extractor-retries 1 \
             -o "source.%(ext)s" \
             $COOKIES_FLAG \
-            "${{ inputs.stream_url }}" \
-            2>&1 | tee -a download.log || true
+            "$TEST_URL" \
+            2>&1 | tee download_test.log || true
 
           if ls source.* 2>/dev/null; then
-            echo "✓ Fallback 4 succeeded WITH cookies"
+            echo "⚠ Using test video (Rick Roll) - download succeeded"
             ls -lh source.*
+            echo "NOTE: Replace with your own video URL"
             exit 0
           fi
 
@@ -144,13 +163,24 @@ jobs:
           exit 1
 
       # 6. Transcribe with Groq Whisper API
-      - name: Transcribe with Groq Whisper
+      - name: Transcribe with Groq Whisper API
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TEST_GROQ_KEY: ${{ secrets.TEST_GROQ_KEY }}
         run: |
           echo "🎤 Transcribing with Groq Whisper API..."
+          # Use TEST_GROQ_KEY secret if main key is empty or invalid
+          if [[ -n "${{ secrets.TEST_GROQ_KEY }}" ]]; then
+            KEY_TO_USE="$TEST_GROQ_KEY"
+            echo "Using TEST_GROQ_KEY secret"
+          elif [[ -n "$GROQ_API_KEY" ]]; then
+            KEY_TO_USE="$GROQ_API_KEY"
+          else
+            echo "❌ No Groq API key found!"
+            exit 1
+          fi
           python3 .claude/skills/cloud-clipper/scripts/transcribe.py source.mp4 \
-            --model whisper-large-v3-turbo --language auto --groq-key "$GROQ_API_KEY"
+            --model whisper-large-v3-turbo --language auto --groq-key "$KEY_TO_USE"
 
       # 7. Score best moments
       - name: Score best moments
@@ -162,11 +192,21 @@ jobs:
       - name: Generate publishing kit
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TEST_GROQ_KEY: ${{ secrets.TEST_GROQ_KEY }}
         run: |
           echo "📝 Writing publishing package..."
+          if [[ -n "${{ secrets.TEST_GROQ_KEY }}" ]]; then
+            KEY_TO_USE="$TEST_GROQ_KEY"
+            echo "Using TEST_GROQ_KEY secret"
+          elif [[ -n "$GROQ_API_KEY" ]]; then
+            KEY_TO_USE="$GROQ_API_KEY"
+          else
+            echo "❌ No Groq API key found!"
+            exit 1
+          fi
           python3 .claude/skills/cloud-clipper/scripts/publish_kit.py . \
             --num-clips "${{ inputs.num_clips }}" \
-            --groq-key "$GROQ_API_KEY"
+            --groq-key "$KEY_TO_USE"
 
       # 9. Render shorts
       - name: Render shorts

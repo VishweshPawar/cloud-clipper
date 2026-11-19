@@ -6,7 +6,7 @@
 - Synthesizes word timestamps
 - Writes transcript.json + transcript.txt
 
-Usage: python3 transcribe.py source.mp4 --groq-key "<key>" [--model small] [--language auto]
+Usage: python3 transcribe.py source.mp4 --groq-key "<key>" [--model whisper-large-v3-turbo] [--language auto]
 """
 import argparse
 import json
@@ -16,37 +16,37 @@ import sys
 import urllib.request
 
 
-def groq_post(file_path, groq_key, model="small", language="auto"):
+def groq_post(file_path, groq_key, model="whisper-large-v3-turbo", language="auto"):
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
-    
+
     # Read file
     with open(file_path, "rb") as f:
         file_data = f.read()
-        
-    boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="model"\r\n\r\n'
-        f"{model}\r\n"
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="response_format"\r\n\r\n'
-        f"verbose_json\r\n"
-    )
+
+    # Build multipart form data following OpenAI API spec
+    boundary = "----GroqBoundary7MA4YWxkTrZu0gW"
+
+    parts = []
+
+    # Model
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n{model}\r\n'.encode())
+
+    # Response format
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\nverbose_json\r\n'.encode())
+
+    # Language (if not auto)
     if language != "auto":
-        body += (
-            f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="language"\r\n\r\n'
-            f"{language}\r\n"
-        )
-    body += (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="audio.mp3"\r\n'
-        f"Content-Type: audio/mpeg\r\n\r\n"
-    )
-    
-    footer = f"\r\n--{boundary}--\r\n"
-    data = body.encode("utf-8") + file_data + footer.encode("utf-8")
-    
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="language"\r\n\r\n{language}\r\n'.encode())
+
+    # File part
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.mp3"\r\nContent-Type: audio/mpeg\r\n\r\n'.encode())
+
+    # File data + closing boundary
+    parts.append(file_data)
+    parts.append(f'\r\n--{boundary}--\r\n'.encode())
+
+    data = b''.join(parts)
+
     req = urllib.request.Request(
         url,
         data=data,
