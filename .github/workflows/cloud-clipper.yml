@@ -150,7 +150,7 @@ jobs:
         run: |
           echo "🎤 Transcribing with Groq Whisper API..."
           python3 .claude/skills/cloud-clipper/scripts/transcribe.py source.mp4 \
-            --model small --language auto --groq-key "$GROQ_API_KEY"
+            --model whisper-large-v3-turbo --language auto --groq-key "$GROQ_API_KEY"
 
       # 7. Score best moments
       - name: Score best moments

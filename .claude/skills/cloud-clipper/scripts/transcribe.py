@@ -119,7 +119,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
     ap.add_argument("--groq-key", required=True)
-    ap.add_argument("--model", default="small")
+    ap.add_argument("--model", default="whisper-large-v3-turbo")
     ap.add_argument("--language", default="auto")
     a = ap.parse_args()
 
