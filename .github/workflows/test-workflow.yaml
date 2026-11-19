@@ -1,0 +1,45 @@
+name: Test Cloud Clipper
+
+"on":
+  workflow_dispatch:
+    inputs:
+      stream_url:
+        description: 'Test YouTube URL'
+        required: true
+        default: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install yt-dlp numpy requests
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsm6 libxext6 nodejs npm
+          npm install -g bun
+
+      - name: Test Groq API key
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          echo "Testing Groq API..."
+          curl -s -H "Authorization: Bearer $GROQ_API_KEY" https://api.groq.com/openai/v1/models | head -c 200
+
+      - name: Download test video
+        run: |
+          ls -la
+          yt-dlp --js-runtime bun -f "bv+ba/b" --merge-output-format mp4 --no-warnings -o "source.%(ext)s" "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+          ls -lh source.* 2>/dev/null || echo "Download failed"
+
+      - name: List artifacts
+        run: |
+          ls -la
+          echo "=== Test complete ==="
