@@ -66,12 +66,43 @@ jobs:
           echo "📥 Downloading stream..."
           COOKIES_FLAG=""
           [ -f /tmp/cookies.txt ] && COOKIES_FLAG="--cookies /tmp/cookies.txt"
-          yt-dlp -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
+
+          # Try multiple format strategies with verbose output
+          echo "Attempting download with cookies: $COOKIES_FLAG"
+          yt-dlp -v \
+            -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
             --merge-output-format mp4 \
+            --no-warnings \
             -o "source.%(ext)s" \
             $COOKIES_FLAG \
-            "${{ inputs.stream_url }}"
-          ls -lh source.* 2>/dev/null || echo "⚠ Download produced no output"
+            "${{ inputs.stream_url }}" \
+            2>&1 | tee download.log || true
+
+          # Check if download succeeded
+          if ls source.* 2>/dev/null; then
+            echo "✓ Download succeeded"
+            ls -lh source.*
+          else
+            echo "❌ Download failed — trying fallback formats..."
+            # Fallback 1: any best video + audio
+            yt-dlp -v \
+              -f "bv+ba/b" \
+              --merge-output-format mp4 \
+              -o "source.%(ext)s" \
+              $COOKIES_FLAG \
+              "${{ inputs.stream_url }}" \
+              2>&1 | tee -a download.log || true
+
+            if ls source.* 2>/dev/null; then
+              echo "✓ Fallback 1 succeeded"
+              ls -lh source.*
+            else
+              echo "❌ All download attempts failed"
+              echo "=== Last 50 lines of download.log ==="
+              tail -50 download.log
+              exit 1
+            fi
+          fi
 
       # 6. Transcribe with Groq Whisper API
       - name: Transcribe with Groq Whisper
