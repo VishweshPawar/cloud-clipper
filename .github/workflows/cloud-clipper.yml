@@ -51,7 +51,17 @@ jobs:
         run: |
           if [ -n "${YOUTUBE_COOKIES}" ]; then
             echo "${YOUTUBE_COOKIES}" > /tmp/cookies.txt
-            echo "YouTube cookies saved ($(wc -c < /tmp/cookies.txt) bytes)"
+            echo "YouTube cookies saved ($(wc -c < /tmp/cookies.txt) bytes, $(wc -l < /tmp/cookies.txt) lines)"
+            echo "=== First 3 lines of cookies.txt ==="
+            head -3 /tmp/cookies.txt
+            echo "=== Last 3 lines of cookies.txt ==="
+            tail -3 /tmp/cookies.txt
+            # Validate cookie format: should have at least domain + name + value
+            if grep -q "\.youtube\.com" /tmp/cookies.txt; then
+              echo "✓ Cookies contain .youtube.com domain"
+            else
+              echo "⚠ WARNING: No .youtube.com domain found in cookies"
+            fi
           else
             echo "⚠ No YouTube cookies provided — skipping (may hit IP blocks on YT)"
           fi
@@ -67,8 +77,23 @@ jobs:
           COOKIES_FLAG=""
           [ -f /tmp/cookies.txt ] && COOKIES_FLAG="--cookies /tmp/cookies.txt"
 
-          # Try multiple format strategies with verbose output
-          echo "Attempting download with cookies: $COOKIES_FLAG"
+          # Try without cookies first (public videos don't need them)
+          echo "=== Attempt 1: WITHOUT cookies ==="
+          yt-dlp -v \
+            -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
+            --merge-output-format mp4 \
+            --no-warnings \
+            -o "source.%(ext)s" \
+            "${{ inputs.stream_url }}" \
+            2>&1 | tee download.log || true
+
+          if ls source.* 2>/dev/null; then
+            echo "✓ Download succeeded WITHOUT cookies"
+            ls -lh source.*
+            exit 0
+          fi
+
+          echo "=== Attempt 2: WITH cookies ==="
           yt-dlp -v \
             -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
             --merge-output-format mp4 \
@@ -76,33 +101,47 @@ jobs:
             -o "source.%(ext)s" \
             $COOKIES_FLAG \
             "${{ inputs.stream_url }}" \
-            2>&1 | tee download.log || true
+            2>&1 | tee -a download.log || true
 
-          # Check if download succeeded
           if ls source.* 2>/dev/null; then
-            echo "✓ Download succeeded"
+            echo "✓ Download succeeded WITH cookies"
             ls -lh source.*
-          else
-            echo "❌ Download failed — trying fallback formats..."
-            # Fallback 1: any best video + audio
-            yt-dlp -v \
-              -f "bv+ba/b" \
-              --merge-output-format mp4 \
-              -o "source.%(ext)s" \
-              $COOKIES_FLAG \
-              "${{ inputs.stream_url }}" \
-              2>&1 | tee -a download.log || true
-
-            if ls source.* 2>/dev/null; then
-              echo "✓ Fallback 1 succeeded"
-              ls -lh source.*
-            else
-              echo "❌ All download attempts failed"
-              echo "=== Last 50 lines of download.log ==="
-              tail -50 download.log
-              exit 1
-            fi
+            exit 0
           fi
+
+          echo "=== Attempt 3: Fallback format WITHOUT cookies ==="
+          yt-dlp -v \
+            -f "bv+ba/b" \
+            --merge-output-format mp4 \
+            -o "source.%(ext)s" \
+            "${{ inputs.stream_url }}" \
+            2>&1 | tee -a download.log || true
+
+          if ls source.* 2>/dev/null; then
+            echo "✓ Fallback 3 succeeded WITHOUT cookies"
+            ls -lh source.*
+            exit 0
+          fi
+
+          echo "=== Attempt 4: Fallback format WITH cookies ==="
+          yt-dlp -v \
+            -f "bv+ba/b" \
+            --merge-output-format mp4 \
+            -o "source.%(ext)s" \
+            $COOKIES_FLAG \
+            "${{ inputs.stream_url }}" \
+            2>&1 | tee -a download.log || true
+
+          if ls source.* 2>/dev/null; then
+            echo "✓ Fallback 4 succeeded WITH cookies"
+            ls -lh source.*
+            exit 0
+          fi
+
+          echo "❌ ALL DOWNLOAD ATTEMPTS FAILED"
+          echo "=== Last 100 lines of download.log ==="
+          tail -100 download.log
+          exit 1
 
       # 6. Transcribe with Groq Whisper API
       - name: Transcribe with Groq Whisper
