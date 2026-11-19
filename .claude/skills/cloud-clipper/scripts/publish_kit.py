@@ -6,6 +6,7 @@ Usage: python3 publish_kit.py <workdir> --num-clips 8 --groq-key "<key>"
 import argparse
 import json
 import os
+import sys
 import urllib.request
 
 
