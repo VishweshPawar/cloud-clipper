@@ -1,16 +1,24 @@
 name: Cloud Clipper — Stream to Viral Shorts
 
-"on":
+on:
   workflow_dispatch:
     inputs:
       stream_url:
         description: 'Stream or VOD URL (YouTube, Twitch, Kick)'
-        required: false
+        required: true
         default: ''
       num_clips:
         description: 'Number of top clips to generate (default: 8)'
         required: false
         default: '8'
+      max_duration:
+        description: 'Maximum clip duration in seconds (default: 120)'
+        required: false
+        default: '120'
+      direct_file_link:
+        description: 'Direct video file link as backup (optional)'
+        required: false
+        default: ''
 
 jobs:
   build-shorts:
@@ -25,15 +33,122 @@ jobs:
       # 1.5. Guard: make sure stream_url was actually provided
       - name: Validate inputs
         run: |
-          if [ -z "${{ inputs.stream_url }}" ]; then
+          if [ -z "${{ env.STREAM_URL }}" ]; then
             echo "❌ No stream_url provided!"
             echo "Go to the Actions tab → click 'Run workflow' → paste a URL into the 'stream_url' field."
             exit 1
           fi
-          echo "✅ stream_url = ${{ inputs.stream_url }}"
+          echo "✅ stream_url provided"
           echo "✅ num_clips = ${{ inputs.num_clips }}"
+        env:
+          STREAM_URL: ${{ inputs.stream_url }}
 
-      # 2. Set up Python
+      # 1.6. Preflight check - verify all dependencies and secrets
+      - name: Preflight check
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          STREAM_URL: ${{ inputs.stream_url }}
+        run: |
+          echo "=== PREFLIGHT CHECK ==="
+
+          # Check Python version
+          PYTHON_VERSION=$(python3 --version)
+          echo "✅ Python: $PYTHON_VERSION"
+
+          # Check yt-dlp works via python3 -m
+          YT_DLP_VERSION=$(python3 -m yt_dlp --version 2>/dev/null || echo "FAILED")
+          if [ "$YT_DLP_VERSION" = "FAILED" ]; then
+            echo "❌ yt-dlp module not working"
+            exit 1
+          fi
+          echo "✅ yt-dlp: $YT_DLP_VERSION"
+
+          # Check ffmpeg and ffprobe
+          if command -v ffmpeg &> /dev/null; then
+            FFMPEG_VER=$(ffmpeg -version | head -1)
+            echo "✅ ffmpeg: $FFMPEG_VER"
+          else
+            echo "❌ ffmpeg not found"
+            exit 1
+          fi
+
+          if command -v ffprobe &> /dev/null; then
+            echo "✅ ffprobe: available"
+          else
+            echo "❌ ffprobe not found"
+            exit 1
+          fi
+
+          # Check JavaScript runtime (bun or node)
+          JS_RUNTIME=""
+          if command -v bun &> /dev/null; then
+            BUN_VER=$(bun --version)
+            echo "✅ bun: $BUN_VER (for yt-dlp JS runtime)"
+            JS_RUNTIME="bun"
+          elif command -v node &> /dev/null; then
+            NODE_VER=$(node --version)
+            echo "✅ node: $NODE_VER (for yt-dlp JS runtime)"
+            JS_RUNTIME="node"
+          else
+            echo "❌ No JavaScript runtime found for yt-dlp JS support"
+            exit 1
+          fi
+
+          # Validate secrets exist (never print values)
+          echo "=== Checking Secrets ==="
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "❌ GROQ_API_KEY is not set"
+            echo "   Go to Settings → Secrets → Actions to add Groq API key"
+            exit 1
+          fi
+          echo "✅ GROQ_API_KEY is set"
+
+          # Check YouTube cookies format if provided (SECURITY: only print size, not contents)
+          if [ -n "$YOUTUBE_COOKIES" ] && [ -f /tmp/cookies.txt ]; then
+            COOKIE_SIZE=$(wc -c < /tmp/cookies.txt)
+            COOKIE_LINES=$(wc -l < /tmp/cookies.txt)
+            echo "✓ Cookies file present: ${COOKIE_SIZE} bytes, ${COOKIE_LINES} lines"
+            # Validate cookie format: must start with correct header
+            if head -1 /tmp/cookies.txt | grep -qE "^(# Netscape|# HTTP) Cookie File"; then
+              echo "✅ Cookies file format validated"
+            else
+              echo "❌ Cookies file format invalid!"
+              echo "   Cookies must start with '# Netscape HTTP Cookie File' or '# HTTP Cookie File'"
+              echo "   Re-export cookies using a Netscape-format exporter and re-add the secret"
+              exit 1
+            fi
+            # Validate tab-separated format (column count check)
+            INVALID_LINES=$(awk 'NR>1 && NF!=7 {print}' /tmp/cookies.txt | wc -l)
+            if [ "$INVALID_LINES" -gt 0 ]; then
+              echo "❌ Cookies have $INVALID_LINES lines without 7 tab-separated columns"
+              echo "   The cookies file may have spaces instead of tabs"
+              echo "   Re-export cookies and ensure Netscape format"
+              exit 1
+            fi
+          else
+            echo "⚠ No YouTube cookies provided — may hit IP blocks on YouTube"
+          fi
+
+          # Validate stream_url looks like a URL
+          if echo "$STREAM_URL" | grep -qE "^https?://"; then
+            echo "✅ stream_url appears to be a valid HTTP/HTTPS URL"
+          else
+            echo "❌ stream_url does not look like a URL: $STREAM_URL"
+            exit 1
+          fi
+
+          # Check disk space (should have at least 5GB free for large downloads)
+          DISK_AVAIL=$(df -BG / | tail -1 | awk '{print $4}' | tr -d 'G')
+          if [ "$DISK_AVAIL" -ge 5 ]; then
+            echo "✅ Disk space available: ${DISK_AVAIL}GB"
+          else
+            echo "⚠ Low disk space: ${DISK_AVAIL}GB (need at least 5GB)"
+          fi
+
+          echo "=== PREFLIGHT CHECK PASSED ==="
+
+      # 2. Set up Python (for yt-dlp, ffmpeg wrappers)
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -42,7 +157,7 @@ jobs:
       # 3. Install dependencies
       - name: Install yt-dlp and ffmpeg with Node.js
         run: |
-          pip install yt-dlp numpy requests
+          pip install --upgrade yt-dlp numpy requests
           sudo apt-get update
           sudo apt-get install -y ffmpeg libsm6 libxext6 nodejs
           # Install node for yt-dlp JS runtime support
@@ -50,137 +165,118 @@ jobs:
           npm install -g bun
         shell: bash
 
-      # 4. Save YouTube cookies from secret (optional)
+      # 4. Save YouTube cookies from secret (optional, for blocked videos)
       - name: Save YouTube cookies
+        if: secrets.YOUTUBE_COOKIES != ''
         run: |
-          if [ -n "${YOUTUBE_COOKIES}" ]; then
-            echo "${YOUTUBE_COOKIES}" > /tmp/cookies.txt
-            echo "YouTube cookies saved ($(wc -c < /tmp/cookies.txt) bytes, $(wc -l < /tmp/cookies.txt) lines)"
-            echo "=== First 3 lines of cookies.txt ==="
-            head -3 /tmp/cookies.txt
-            echo "=== Last 3 lines of cookies.txt ==="
-            tail -3 /tmp/cookies.txt
-            # Validate cookie format: should have at least domain + name + value
-            if grep -q "\.youtube\.com" /tmp/cookies.txt; then
-              echo "✓ Cookies contain .youtube.com domain"
-            else
-              echo "⚠ WARNING: No .youtube.com domain found in cookies"
-            fi
-          else
-            echo "⚠ No YouTube cookies provided — skipping (may hit IP blocks on YT)"
-          fi
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+          # SECURITY: Use printf to write, no echo of contents
+          printf '%s\n' "${{ secrets.YOUTUBE_COOKIES }}" > /tmp/cookies.txt
+          chmod 600 /tmp/cookies.txt
+          COOKIE_SIZE=$(wc -c < /tmp/cookies.txt)
+          COOKIE_LINES=$(wc -l < /tmp/cookies.txt)
+          echo "YouTube cookies saved: ${COOKIE_SIZE} bytes, ${COOKIE_LINES} lines"
+      # Cleanup cookies at the end of the job
+      - name: Cleanup cookies
+        if: always()
+        run: |
+          rm -f /tmp/cookies.txt
+          echo "Cookies file removed for security"
 
-      # 5. Download stream with retry logic and JS runtime
+      # 5. Download stream with yt-dlp
       - name: Download stream
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          MAX_DURATION: ${{ inputs.max_duration }}
+          DIRECT_FILE_LINK: ${{ inputs.direct_file_link }}
+          STREAM_URL: ${{ inputs.stream_url }}
         run: |
           echo "📥 Downloading stream..."
-          COOKIES_FLAG=""
-          [ -f /tmp/cookies.txt ] && COOKIES_FLAG="--cookies /tmp/cookies.txt"
 
           # Set yt-dlp JS runtime to bun
           export PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-          # Use a test video that works reliably
-          TEST_URL="https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+          # Create work directory
+          mkdir -p work/source
 
-          # Try user's URL first, fallback to test video
-          URL_TO_TRY="${{ inputs.stream_url }}"
+          # Build download.py arguments
+          DOWNLOAD_ARGS="$STREAM_URL --out work/source --max-duration $MAX_DURATION"
 
-          download_video() {
-            local url=$1
-            local prefix=$2
+          # Add cookies if available
+          if [ -f /tmp/cookies.txt ]; then
+            DOWNLOAD_ARGS="$DOWNLOAD_ARGS --cookies /tmp/cookies.txt"
+            echo "✓ Cookies file will be passed to download.py"
+          fi
 
-            echo "=== $prefix ==="
-            yt-dlp -v \
-              --js-runtime bun \
-              -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b" \
-              --merge-output-format mp4 \
-              --no-warnings \
-              --extractor-retries 1 \
-              --socket-timeout 30 \
-              -o "source.%(ext)s" \
-              $COOKIES_FLAG \
-              "$url" \
-              2>&1 | tee "${prefix}_download.log" || true
+          # Try user's URL first
+          echo "=== Download attempt ==="
+          python3 .claude/skills/cloud-clipper/scripts/download.py $DOWNLOAD_ARGS 2>&1 | tee work/source/download.log
 
-            if ls source.* 2>/dev/null; then
-              echo "✓ Download succeeded: $prefix"
-              ls -lh source.*
-              return 0
+          if [ -f "work/source/source.mp4" ]; then
+            echo "✓ Download succeeded"
+            cp work/source/source.mp4 source.mp4
+            [ -f "work/source/chat.json" ] && cp work/source/chat.json chat.json
+            [ -f "work/source/info.json" ] && cp work/source/info.json info.json
+            [ -f "work/source/live_status.json" ] && cp work/source/live_status.json live_status.json
+            exit 0
+          fi
+
+          # If direct_file_link provided and primary failed, try that
+          if [ -n "$DIRECT_FILE_LINK" ] && [ "$DIRECT_FILE_LINK" != "" ]; then
+            echo "=== Fallback attempt: direct_file_link ==="
+            python3 .claude/skills/cloud-clipper/scripts/download.py "$DIRECT_FILE_LINK" --out work/source --max-duration $MAX_DURATION --cookies /tmp/cookies.txt 2>&1 | tee work/source/download_direct.log || true
+            if [ -f "work/source/source.mp4" ]; then
+              echo "✓ Download succeeded via direct_file_link"
+              cp work/source/source.mp4 source.mp4
+              [ -f "work/source/chat.json" ] && cp work/source/chat.json chat.json
+              [ -f "work/source/info.json" ] && cp work/source/info.json info.json
+              exit 0
             fi
-            return 1
-          }
-
-          # Try multiple downloads with exponential backoff
-          download_video "$URL_TO_TRY" "attempt1_user" && exit 0
-
-          # Try fallback formats
-          echo "=== Attempt 2: Fallback format ==="
-          yt-dlp -v \
-            --js-runtime bun \
-            -f "bv+ba/b" \
-            --merge-output-format mp4 \
-            --no-warnings \
-            --extractor-retries 1 \
-            -o "source.%(ext)s" \
-            $COOKIES_FLAG \
-            "$URL_TO_TRY" \
-            2>&1 | tee download2.log || true
-
-          if ls source.* 2>/dev/null; then
-            echo "✓ Fallback format succeeded"
-            ls -lh source.*
-            exit 0
           fi
 
-          # Final fallback: use test video
-          echo "=== Attempt 3: Test video fallback ==="
-          yt-dlp -v \
-            --js-runtime bun \
-            -f "bv+ba/b" \
-            --merge-output-format mp4 \
-            --no-warnings \
-            --extractor-retries 1 \
-            -o "source.%(ext)s" \
-            $COOKIES_FLAG \
-            "$TEST_URL" \
-            2>&1 | tee download_test.log || true
-
-          if ls source.* 2>/dev/null; then
-            echo "⚠ Using test video (Rick Roll) - download succeeded"
-            ls -lh source.*
-            echo "NOTE: Replace with your own video URL"
-            exit 0
-          fi
-
-          echo "❌ ALL DOWNLOAD ATTEMPTS FAILED"
+          echo "❌ DOWNLOAD FAILED"
           echo "=== Last 100 lines of download.log ==="
-          tail -100 download.log
+          tail -100 work/source/download.log 2>/dev/null || echo "No download.log found"
+          echo ""
+          echo "💡 SUGGESTION: Check if the URL is accessible, or provide a direct_file_link as backup"
           exit 1
 
       # 6. Transcribe with Groq Whisper API
       - name: Transcribe with Groq Whisper API
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          TEST_GROQ_KEY: ${{ secrets.TEST_GROQ_KEY }}
+          STREAM_URL: ${{ inputs.stream_url }}
         run: |
           echo "🎤 Transcribing with Groq Whisper API..."
-          # Use TEST_GROQ_KEY secret if main key is empty or invalid
-          if [[ -n "${{ secrets.TEST_GROQ_KEY }}" ]]; then
-            KEY_TO_USE="$TEST_GROQ_KEY"
-            echo "Using TEST_GROQ_KEY secret"
-          elif [[ -n "$GROQ_API_KEY" ]]; then
-            KEY_TO_USE="$GROQ_API_KEY"
-          else
+          # Use only GROQ_API_KEY (TEST_GROQ_KEY does not exist in secrets)
+          if [ -z "$GROQ_API_KEY" ]; then
             echo "❌ No Groq API key found!"
             exit 1
           fi
+          echo "Using GROQ_API_KEY secret"
+
+          # Extract audio, split into chunks under 24MB (Groq limit ~25MB)
+          DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source.mp4)
+          echo "Video duration: ${DURATION}s"
+
+          # Split audio into 25-second chunks (under 24MB for libmp3lame -q2)
+          CHUNK_DURATION=25
+          POS=0
+          CHUNK_IDX=0
+          while [ "$(echo "$POS < $DURATION" | bc -l 2>/dev/null || echo 0)" -eq 1 ]; do
+            END=$(echo "$POS + $CHUNK_DURATION" | bc)
+            if [ "$(echo "$END > $DURATION" | bc)" -eq 1 ]; then
+              END=$DURATION
+            fi
+            CHUNK_FILE="_chunk_${CHUNK_IDX}.mp3"
+            ffmpeg -v error -y -i source.mp4 -ss "$POS" -to "$END" -vn -ac 1 -ar 8000 -acodec libmp3lame -qscale:a 2 -ss "$POS" -t "$(echo "$END - $POS" | bc)" "$CHUNK_FILE"
+            echo "Created chunk $CHUNK_FILE: ${POS}s-${END}s"
+            POS=$END
+            CHUNK_IDX=$((CHUNK_IDX + 1))
+          done
+
+          # Check if we need to retry any chunks due to rate limiting
           python3 .claude/skills/cloud-clipper/scripts/transcribe.py source.mp4 \
-            --model whisper-large-v3-turbo --language auto --groq-key "$KEY_TO_USE"
+            --model whisper-large-v3-turbo --language auto --groq-key "$GROQ_API_KEY"
 
       # 7. Score best moments
       - name: Score best moments
@@ -192,21 +288,15 @@ jobs:
       - name: Generate publishing kit
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          TEST_GROQ_KEY: ${{ secrets.TEST_GROQ_KEY }}
         run: |
           echo "📝 Writing publishing package..."
-          if [[ -n "${{ secrets.TEST_GROQ_KEY }}" ]]; then
-            KEY_TO_USE="$TEST_GROQ_KEY"
-            echo "Using TEST_GROQ_KEY secret"
-          elif [[ -n "$GROQ_API_KEY" ]]; then
-            KEY_TO_USE="$GROQ_API_KEY"
-          else
+          if [ -z "$GROQ_API_KEY" ]; then
             echo "❌ No Groq API key found!"
             exit 1
           fi
           python3 .claude/skills/cloud-clipper/scripts/publish_kit.py . \
             --num-clips "${{ inputs.num_clips }}" \
-            --groq-key "$KEY_TO_USE"
+            --groq-key "$GROQ_API_KEY"
 
       # 9. Render shorts
       - name: Render shorts
@@ -215,16 +305,74 @@ jobs:
           python3 .claude/skills/cloud-clipper/scripts/make_shorts.py source.mp4 shorts \
             --clips clips.json --layout crop
 
-      # 10. Upload artifacts
+      # 10. Validate output videos and create run summary
+      - name: Validate output videos
+        run: |
+          echo "=== Video validation ==="
+          if [ ! -d "shorts" ] || [ -z "$(ls -A shorts/*.mp4 2>/dev/null)" ]; then
+            echo "⚠ No output videos found"
+            exit 1
+          fi
+
+          for f in shorts/*.mp4; do
+            echo "Validating $f..."
+            # Check vertical 9:16
+            WIDTH=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$f")
+            HEIGHT=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$f")
+            if [ "$WIDTH" = "1080" ] && [ "$HEIGHT" = "1920" ]; then
+              echo "✅ $f: Correct 9:16 vertical format (1080x1920)"
+            else
+              echo "⚠ $f: Format $WIDTHx$HEIGHT (expected 1080x1920 for 9:16)"
+            fi
+
+            # Check duration
+            DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
+            echo "   Duration: ${DUR}s"
+
+            # Check audio
+            if ffprobe -v error -select_streams a:0 -show_entries stream=codec_name "$f" 2>/dev/null; then
+              echo "✅ $f: Audio present"
+            else
+              echo "⚠ $f: No audio detected"
+            fi
+
+            # Check file is not empty
+            SIZE=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+            if [ "$SIZE" -gt 100000 ]; then
+              echo "✅ $f: File size ${SIZE} bytes (valid)"
+            else
+              echo "❌ $f: File too small (${SIZE} bytes)"
+            fi
+          done
+
+          # Create run summary
+          echo "# Cloud Clipper Run Summary" > run_summary.md
+          echo "" >> run_summary.md
+          echo "## Output Videos" >> run_summary.md
+          for f in shorts/*.mp4; do
+            TITLE=$(jq -r '.candidates[0].text // "Untitled"' < hype.json 2>/dev/null || echo "N/A")
+            DUR=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$f")
+            echo "- **$f**: ${DUR}s - $TITLE" >> run_summary.md
+          done
+          echo "" >> run_summary.md
+          echo "## Metadata" >> run_summary.md
+          echo "- Stream: $(jq -r '.webpage_url' < info.json 2>/dev/null || echo 'N/A')" >> run_summary.md
+          echo "- Title: $(jq -r '.title' < info.json 2>/dev/null || echo 'N/A')" >> run_summary.md
+          echo "- Channel: $(jq -r '.channel' < info.json 2>/dev/null || echo 'N/A')" >> run_summary.md
+          echo "- Duration: $(jq -r '.duration' < info.json 2>/dev/null || echo 'N/A')s" >> run_summary.md
+
+      # 11. Upload artifacts
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: finished-shorts
-          path: shorts/
+          path: |
+            shorts/
+            run_summary.md
           retention-days: 30
 
-      # 11. Notify
+      # 12. Notify
       - name: Notify completion
         if: always()
         run: |

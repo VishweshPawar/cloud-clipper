@@ -3,12 +3,13 @@
 
 Usage:
   download.py "<URL>" --out work/<id> [--section 01:00:00-02:30:00]
-                [--max-height 1080] [--no-chat]
+                [--max-height 1080] [--max-duration 7200] [--no-chat] [--cookies FILE]
 
 Outputs:
   work/<id>/source.mp4         — the video file (max 1080p)
   work/<id>/info.json          — metadata (title, channel, duration, etc.)
   work/<id>/chat.json          — live chat replay (YouTube only, optional)
+  work/<id>/live_status.json   — live stream status info (if live)
 """
 import argparse
 import glob
@@ -31,7 +32,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--section", help="start-end, e.g. 01:00:00-02:30:00")
     ap.add_argument("--max-height", type=int, default=1080)
+    ap.add_argument("--max-duration", type=int, default=7200, help="Max download duration in seconds (default 2h)")
     ap.add_argument("--no-chat", action="store_true", help="Skip chat download entirely (use for Twitch/Kick)")
+    ap.add_argument("--cookies", help="Path to cookies.txt file for authentication")
     a = ap.parse_args()
 
     try:
@@ -42,6 +45,11 @@ def main():
     os.makedirs(a.out, exist_ok=True)
     base = {"quiet": False, "noprogress": False, "noplaylist": True}
 
+    # Add cookies if provided
+    if a.cookies and os.path.exists(a.cookies):
+        base["cookiefile"] = a.cookies
+        print(f"✓ Using cookies file: {a.cookies}")
+
     # 1) Get metadata without downloading
     with yt_dlp.YoutubeDL({**base, "skip_download": True, "quiet": True}) as y:
         info = y.extract_info(a.url, download=False)
@@ -49,6 +57,18 @@ def main():
     if info.get("is_live"):
         print("⚠ Stream is LIVE — downloading from buffer start.")
         print("   Run again after it ends for best results, or use --section to clip a portion.")
+        # Save live status for downstream steps
+        json.dump({
+            "is_live": True,
+            "title": info.get("title"),
+            "requested_url": a.url,
+        }, open(os.path.join(a.out, "live_status.json"), "w"), indent=2, ensure_ascii=False)
+
+        # Check if stream has a duration limit
+        stream_duration = info.get("duration", 0) or 0
+        if stream_duration > a.max_duration:
+            print(f"⚠ Stream duration ({stream_duration}s) exceeds max_duration ({a.max_duration}s)")
+            print("   Consider using --section to clip a specific portion, or set --max-duration higher")
 
     keep = {k: info.get(k) for k in ("id", "title", "uploader", "channel", "duration",
                                      "webpage_url", "extractor", "upload_date")}

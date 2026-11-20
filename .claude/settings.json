@@ -1,0 +1,11 @@
+{
+  "permissionBudgets": {
+    "bash": {
+      "allow": [
+        "install",
+        "setup",
+        "agent"
+      ]
+    }
+  }
+}

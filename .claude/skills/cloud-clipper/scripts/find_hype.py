@@ -122,11 +122,6 @@ def main():
     base = np.convolve(pad, np.ones(k) / k, mode="valid")[:n]
     audio = np.clip(db - base, 0, None)
 
-    # If audio is silent (no words), create dummy segments to avoid crash
-    if len(words) == 0:
-        print("⚠ No words found in audio, creating dummy segment for scoring")
-        tr["segments"] = [{"start": 0, "end": n, "text": "", "words": []}]
-
     msgs, chype = chat_per_sec(os.path.join(a.workdir, "chat.json"), n, offset)
     if msgs is None:
         signals = ["audio", "speech", "excited-words"]
@@ -135,7 +130,7 @@ def main():
     else:
         signals = ["audio", "speech", "excited-words"]
 
-    # word‑level arrays
+    # word‑level arrays - get words from transcript
     wps = np.zeros(n)
     exc = np.zeros(n)
     words = tr.get("words", [])
@@ -150,6 +145,11 @@ def main():
                     dur = (seg_end - seg_start) / len(ws)
                     for i, w in enumerate(ws):
                         words.append({"w": w, "s": seg_start + i * dur, "e": seg_start + (i + 1) * dur})
+    # Guard: ensure words list exists
+    if not words:
+        print("⚠ No words in transcript for scoring!")
+        exit(1)
+
     for w in words:
         i = int(w["s"])
         if 0 <= i < n:

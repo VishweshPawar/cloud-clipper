@@ -36,7 +36,7 @@ jobs:
       - name: Download test video
         run: |
           ls -la
-          yt-dlp --js-runtime bun -f "bv+ba/b" --merge-output-format mp4 --no-warnings -o "source.%(ext)s" "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+          python3 -m yt_dlp --js-runtime bun -f "bv+ba/b" --merge-output-format mp4 --no-warnings -o "source.%(ext)s" "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
           ls -lh source.* 2>/dev/null || echo "Download failed"
 
       - name: List artifacts
