@@ -1,0 +1,28 @@
+# Large files that shouldn't be tracked
+*.mp4
+*.wav
+*.mkv
+*.webm
+*.flv
+
+# Output directories with large files
+output/
+klap-clone/work/
+
+# Audio chunks from transcription
+*chunk*.mp3
+
+# Log files
+*.log
+
+# Node modules
+node_modules/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Test outputs
+shorts/
+source.mp4

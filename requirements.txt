@@ -1,0 +1,10 @@
+# Cloud Clipper Dependencies
+# Installed in GitHub Actions at the start of each run
+# Pin major versions but allow yt-dlp to get the latest (YouTube changes often)
+
+yt-dlp>=2024.11.01    # Latest version handles recent YouTube changes
+numpy>=1.26.0         # Required for audio processing and scoring
+requests>=2.32.0      # Used for API calls
+
+# Note: yt-dlp is installed fresh each run because YouTube frequently changes
+# its site structure. Pinning yt-dlp version can cause download failures.

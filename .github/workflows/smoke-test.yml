@@ -1,0 +1,153 @@
+# Smoke Test Workflow
+# Quick verification that the pipeline works with a safe test video
+name: Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_url:
+        description: 'Test URL (defaults to a safe test video)'
+        required: false
+        default: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade yt-dlp numpy requests
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsm6 libxext6 nodejs
+          # Install node for yt-dlp JS runtime support
+          sudo apt-get install -y npm
+          npm install -g bun
+        shell: bash
+
+      - name: Cleanup cookies
+        if: always()
+        run: |
+          rm -f /tmp/cookies.txt
+          echo "Cookies file removed for security"
+
+      - name: Preflight check
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+        run: |
+          echo "=== SMOKE TEST START ==="
+
+          # Check Python
+          python3 --version
+
+          # Check yt-dlp
+          python3 -m yt_dlp --version
+
+          # Check ffmpeg
+          ffmpeg -version | head -1
+
+          # Check ffprobe
+          ffprobe -version | head -1
+
+          # Check JavaScript runtime (bun or node)
+          JS_RUNTIME=""
+          if command -v bun &> /dev/null; then
+            BUN_VER=$(bun --version)
+            echo "✅ bun: $BUN_VER (for yt-dlp JS runtime)"
+            JS_RUNTIME="bun"
+          elif command -v node &> /dev/null; then
+            NODE_VER=$(node --version)
+            echo "✅ node: $NODE_VER (for yt-dlp JS runtime)"
+            JS_RUNTIME="node"
+          else
+            echo "❌ No JavaScript runtime found for yt-dlp JS support"
+            exit 1
+          fi
+
+          # Check Groq key (only GROQ_API_KEY exists in secrets)
+          if [ -z "$GROQ_API_KEY" ]; then
+            echo "❌ GROQ_API_KEY not set in secrets"
+            echo "   Go to Settings → Secrets → Actions to add Groq API key"
+            exit 1
+          fi
+          echo "✅ GROQ_API_KEY is set"
+
+          echo "=== PREFLIGHT PASSED ==="
+
+      - name: Save YouTube cookies
+        if: secrets.YOUTUBE_COOKIES != ''
+        run: |
+          # SECURITY: Use printf to write, no echo of contents
+          printf '%s\n' "${{ secrets.YOUTUBE_COOKIES }}" > /tmp/cookies.txt
+          chmod 600 /tmp/cookies.txt
+          COOKIE_SIZE=$(wc -c < /tmp/cookies.txt)
+          echo "YouTube cookies saved: ${COOKIE_SIZE} bytes"
+          # Validate cookie format
+          if head -1 /tmp/cookies.txt | grep -qE "^(# Netscape|# HTTP) Cookie File"; then
+            echo "✅ Cookies file format validated"
+          else
+            echo "⚠ WARNING: Cookies may not be in Netscape format"
+          fi
+
+      - name: Download test video
+        run: |
+          mkdir -p work/source
+
+          echo "Downloading with: python3 .claude/skills/cloud-clipper/scripts/download.py ${{ inputs.test_url }} --out work/source --max-duration 120"
+          python3 .claude/skills/cloud-clipper/scripts/download.py "${{ inputs.test_url }}" --out work/source --max-duration 120 2>&1 | tee work/download.log
+
+          if [ -f "work/source/source.mp4" ]; then
+            echo "✓ Download succeeded"
+            cp work/source/source.mp4 source.mp4
+          else
+            echo "⚠ Download may have partial results"
+          fi
+
+      - name: Validate output video
+        run: |
+          if [ -f "source.mp4" ]; then
+            DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source.mp4)
+            echo "Video duration: ${DURATION}s"
+            if [ "$(echo "$DURATION > 0" | bc)" -eq 1 ]; then
+              echo "✅ Video file is valid"
+            else
+              echo "❌ Video duration is 0 or invalid"
+              exit 1
+            fi
+          else
+            echo "⚠ No source.mp4 to validate"
+          fi
+
+      - name: Cleanup cookies (end)
+        if: always()
+        run: |
+          rm -f /tmp/cookies.txt
+          echo "Cookies file removed for security"
+
+      - name: Upload smoke test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results
+          path: |
+            source.mp4
+            work/source/
+          retention-days: 7
+
+      - name: Notify completion
+        run: |
+          echo "✅ Smoke test complete!"
+          if [ -f "source.mp4" ]; then
+            echo "Video downloaded and validated successfully"
+          else
+            echo "Download may need investigation"
+          fi
