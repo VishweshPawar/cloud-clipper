@@ -39,11 +39,13 @@ jobs:
           rm -f /tmp/cookies.txt
           echo "Cookies file removed for security"
 
-      - name: Preflight check
+      - name: Show secrets status
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: |
+          echo "YOUTUBE_COOKIES: $([ -n \"$YOUTUBE_COOKIES\" ] && echo "present" || echo "MISSING")"
+          echo "GROQ_API_KEY: $([ -n \"$GROQ_API_KEY\" ] && echo "present" || echo "MISSING")"
           echo "=== SMOKE TEST START ==="
 
           # Check Python
@@ -101,22 +103,39 @@ jobs:
           fi
 
       - name: Download test video
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: |
           mkdir -p work/source
 
           echo "Downloading with: python3 .claude/skills/cloud-clipper/scripts/download.py ${{ inputs.test_url }} --out work/source --max-duration 120"
-          python3 .claude/skills/cloud-clipper/scripts/download.py "${{ inputs.test_url }}" --out work/source --max-duration 120 2>&1 | tee work/download.log
+          if [ -n "$YOUTUBE_COOKIES" ] && [ "$YOUTUBE_COOKIES" != "" ]; then
+            echo "${YOUTUBE_COOKIES}" > /tmp/cookies.txt
+            python3 .claude/skills/cloud-clipper/scripts/download.py "${{ inputs.test_url }}" --out work/source --max-duration 120 --cookies /tmp/cookies.txt 2>&1 | tee work/download.log || true
+          else
+            python3 .claude/skills/cloud-clipper/scripts/download.py "${{ inputs.test_url }}" --out work/source --max-duration 120 2>&1 | tee work/download.log || true
+          fi
 
           if [ -f "work/source/source.mp4" ]; then
             echo "✓ Download succeeded"
             cp work/source/source.mp4 source.mp4
           else
-            echo "⚠ Download may have partial results"
+            echo "❌ Download failed: source.mp4 not found"
+            echo "=== Last 30 lines of yt-dlp output ==="
+            tail -30 work/download.log 2>/dev/null || echo "No download.log found"
+            exit 1
           fi
 
       - name: Validate output video
         run: |
           if [ -f "source.mp4" ]; then
+            FILE_SIZE=$(stat -c%s source.mp4 2>/dev/null || stat -f%z source.mp4 2>/dev/null)
+            echo "File size: ${FILE_SIZE} bytes"
+            if [ "$FILE_SIZE" -lt 100000 ]; then
+              echo "❌ File too small (${FILE_SIZE} bytes, need > 100KB)"
+              exit 1
+            fi
+
             DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 source.mp4)
             echo "Video duration: ${DURATION}s"
             if [ "$(echo "$DURATION > 0" | bc)" -eq 1 ]; then
@@ -126,7 +145,8 @@ jobs:
               exit 1
             fi
           else
-            echo "⚠ No source.mp4 to validate"
+            echo "❌ No source.mp4 found"
+            exit 1
           fi
 
       - name: Cleanup cookies (end)
