@@ -84,10 +84,12 @@ jobs:
           echo "=== PREFLIGHT PASSED ==="
 
       - name: Save YouTube cookies
-        if: secrets.YOUTUBE_COOKIES != ''
+        if: env.YOUTUBE_COOKIES != ''
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: |
           # SECURITY: Use printf to write, no echo of contents
-          printf '%s\n' "${{ secrets.YOUTUBE_COOKIES }}" > /tmp/cookies.txt
+          printf '%s\n' "${YOUTUBE_COOKIES}" > /tmp/cookies.txt
           chmod 600 /tmp/cookies.txt
           COOKIE_SIZE=$(wc -c < /tmp/cookies.txt)
           echo "YouTube cookies saved: ${COOKIE_SIZE} bytes"
